@@ -1,6 +1,6 @@
 #include "memorybuffer.h"
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(DSP56K_NO_MMU)
 
 #include <algorithm>
 

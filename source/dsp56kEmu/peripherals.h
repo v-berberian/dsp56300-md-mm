@@ -10,6 +10,7 @@
 #include "timers.h"
 #include "types.h"
 #include <array>
+#include <atomic>
 
 namespace dsp56k
 {
@@ -110,18 +111,16 @@ namespace dsp56k
 		virtual void setSymbols(Disassembler& _disasm) const = 0;
 		virtual void terminate() = 0;
 
+		// Every deadline change is mirrored into the DSP's per-instruction test, see
+		// DSP::refreshPeripheralCheck(), which is why all four live in the cpp.
 		void setDelayCycles(uint32_t _delayCycles) noexcept;
 		void setCycleDeadline(uint32_t _delayCycles) noexcept;
-		void clearCycleDeadline() noexcept { m_hasCycleDeadline = false; }
-
-		void resetDelayCycles(const uint64_t _instructionCount, const uint32_t _delayCycles) noexcept
-		{
-			m_delayCycles = _delayCycles;
-			m_targetClock = _instructionCount + _delayCycles;
-		}
+		void clearCycleDeadline() noexcept;
+		void resetDelayCycles(uint64_t _instructionCount, uint32_t _delayCycles) noexcept;
 
 		uint32_t getDelayCycles() const { return m_delayCycles; }
 		auto getTargetClock() const { return m_targetClock; }
+        uint64_t getTargetCycle() const { return m_hasCycleDeadline ? m_targetCycle : UINT64_MAX; }
 		bool isDue(const uint64_t _instructions, const uint64_t _cycles) const
 		{
 			return _instructions >= m_targetClock || (m_hasCycleDeadline && _cycles >= m_targetCycle);
@@ -133,12 +132,29 @@ namespace dsp56k
 
 		auto getType() const { return m_type; }
 
+	protected:
+		// True once after anything asked for immediate attention through
+		// setDelayCycles(): a sub-peripheral deadline computed before then is stale.
+		// Hosts that write the port from another thread may in theory clear a wake
+		// that lands between the load and the store; that wake still moved the
+		// deadline, so the peripherals run at once and the skipped sub-peripheral
+		// is at most one MaxDelayCycles late. The single-thread scheduler has no
+		// such race.
+		bool takeWake() noexcept
+		{
+			const bool woken = m_woken.load(std::memory_order_relaxed);
+			if(woken)
+				m_woken.store(false, std::memory_order_relaxed);
+			return woken;
+		}
+
 	private:
 		DSP* m_dsp = nullptr;
 		uint32_t m_delayCycles = 0;
 		uint64_t m_targetClock = 0;
 		uint64_t m_targetCycle = 0;
 		bool m_hasCycleDeadline = false;
+		std::atomic<bool> m_woken{true};
 		PeripheralType m_type;
 	};
 
@@ -210,6 +226,13 @@ namespace dsp56k
 		Timers m_timers;
 		EssiPort m_portC;
 		EssiPort m_portD;
+
+		// Instruction-domain deadlines of the sub-peripherals that only report a
+		// remaining delay when executed early. exec() skips each until it is due
+		// or until something woke the peripherals, see IPeripherals::takeWake().
+		uint64_t m_hdiDue = 0;
+		uint64_t m_timerDue = 0;
+		uint64_t m_dmaDue = 0;
 	};
 
 	class Peripherals56367;

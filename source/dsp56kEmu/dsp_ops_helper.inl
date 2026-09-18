@@ -52,12 +52,12 @@ namespace dsp56k
 	}
 
 	// Memory Read	
-	template <Instruction Inst, std::enable_if_t<!hasFieldT<Inst,Field_s>() && has3Fields<Inst, Field_MMM, Field_RRR, Field_S>()>*> TWord DSP::readMem(const TWord op)
+	template <Instruction Inst, std::enable_if_t<!hasFieldT<Inst,Field_s>() && has3Fields<Inst, Field_MMM, Field_RRR, Field_S>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op)
 	{
 		return readMem<Inst>(op, getFieldValueMemArea<Inst>(op));
 	}
 
-	template <Instruction Inst, std::enable_if_t<!hasFields<Inst,Field_s, Field_S>() && hasFields<Inst, Field_MMM, Field_RRR>()>*> TWord DSP::readMem(const TWord op, EMemArea area)
+	template <Instruction Inst, std::enable_if_t<!hasFields<Inst,Field_s, Field_S>() && hasFields<Inst, Field_MMM, Field_RRR>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op, EMemArea area)
 	{
 		const TWord mmm = getFieldValue<Inst, Field_MMM>(op);
 		const TWord rrr = getFieldValue<Inst, Field_RRR>(op);
@@ -73,7 +73,7 @@ namespace dsp56k
 		return memRead(area, ea);
 	}
 
-	template <Instruction Inst, TWord MMM, std::enable_if_t<!hasFields<Inst,Field_s, Field_S>() && hasFields<Inst, Field_MMM, Field_RRR>()>*> TWord DSP::readMem(const TWord op, EMemArea area)
+	template <Instruction Inst, TWord MMM, std::enable_if_t<!hasFields<Inst,Field_s, Field_S>() && hasFields<Inst, Field_MMM, Field_RRR>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op, EMemArea area)
 	{
 		const TWord rrr = getFieldValue<Inst, Field_RRR>(op);
 
@@ -91,38 +91,38 @@ namespace dsp56k
 		return memRead(area, ea);
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaaaaaaaa>()>*> TWord DSP::readMem(const TWord op, EMemArea area) const
+	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaaaaaaaa>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op, EMemArea area) const
 	{
 		return memRead(area, effectiveAddress<Inst>(op));
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaa>()>*> TWord DSP::readMem(const TWord op, EMemArea area) const
+	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaa>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op, EMemArea area) const
 	{
 		return memRead(area, getFieldValue<Inst, Field_aaaaaa>(op));
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFields<Inst, Field_aaaaaa, Field_S>()>*> TWord DSP::readMem(const TWord op) const
+	template <Instruction Inst, std::enable_if_t<hasFields<Inst, Field_aaaaaa, Field_S>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op) const
 	{
 		return readMem<Inst>(op, getFieldValueMemArea<Inst>(op));
 	}
 
-	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_qqqqqq, Field_S>()>*> TWord DSP::readMem(const TWord op) const
+	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_qqqqqq, Field_S>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op) const
 	{
 		return memReadPeriphFFFF80(getFieldValueMemArea<Inst>(op), getFieldValue<Inst, Field_qqqqqq>(op), Inst);
 	}
 
-	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_pppppp, Field_S>()>*> TWord DSP::readMem(const TWord op) const
+	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_pppppp, Field_S>()>*> ASMJIT_FORCE_INLINE TWord DSP::readMem(const TWord op) const
 	{
 		return memReadPeriphFFFFC0(getFieldValueMemArea<Inst>(op), getFieldValue<Inst, Field_pppppp>(op), Inst);
 	}
 
 	// Memory Write	
-	template <Instruction Inst, std::enable_if_t<has3Fields<Inst, Field_MMM, Field_RRR, Field_S>()>*> void DSP::writeMem(const TWord op, const TWord value)
+	template <Instruction Inst, std::enable_if_t<has3Fields<Inst, Field_MMM, Field_RRR, Field_S>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, const TWord value)
 	{
 		return writeMem<Inst>(op, getFieldValueMemArea<Inst>(op), value);
 	}
 
-	template <Instruction Inst, TWord MMM, std::enable_if_t<hasFields<Inst, Field_MMM, Field_RRR>()>*> void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
+	template <Instruction Inst, TWord MMM, std::enable_if_t<hasFields<Inst, Field_MMM, Field_RRR>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
 	{
 		const TWord rrr = getFieldValue<Inst, Field_RRR>(op);
 
@@ -137,7 +137,7 @@ namespace dsp56k
 			memWrite(area, ea, value);
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFields<Inst, Field_MMM, Field_RRR>()>*> void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
+	template <Instruction Inst, std::enable_if_t<hasFields<Inst, Field_MMM, Field_RRR>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
 	{
 		const TWord mmm = getFieldValue<Inst, Field_MMM>(op);
 		const TWord rrr = getFieldValue<Inst, Field_RRR>(op);
@@ -153,27 +153,27 @@ namespace dsp56k
 			memWrite(area, ea, value);
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaaaaaaaa>()>*> void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
+	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaaaaaaaa>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
 	{
 		memWrite(area, effectiveAddress<Inst>(op), value);
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaa>()>*> void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
+	template <Instruction Inst, std::enable_if_t<hasFieldT<Inst, Field_aaaaaa>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, EMemArea area, const TWord value)
 	{
 		memWrite(area, getFieldValue<Inst, Field_aaaaaa>(op), value);
 	}
 
-	template <Instruction Inst, std::enable_if_t<hasFields<Inst, Field_aaaaaa, Field_S>()>*> void DSP::writeMem(const TWord op, const TWord value)
+	template <Instruction Inst, std::enable_if_t<hasFields<Inst, Field_aaaaaa, Field_S>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, const TWord value)
 	{
 		writeMem<Inst>(op, getFieldValueMemArea<Inst>(op), value);
 	}
 
-	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_qqqqqq, Field_S>()>*> void DSP::writeMem(const TWord op, const TWord value)
+	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_qqqqqq, Field_S>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, const TWord value)
 	{
 		memWritePeriphFFFF80(getFieldValueMemArea<Inst>(op), getFieldValue<Inst, Field_qqqqqq>(op), value);
 	}
 
-	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_pppppp, Field_S>()>*> void DSP::writeMem(const TWord op, const TWord value)
+	template <Instruction Inst, std::enable_if_t<!hasAnyField<Inst, Field_MMM, Field_RRR>() && hasFields<Inst, Field_pppppp, Field_S>()>*> ASMJIT_FORCE_INLINE void DSP::writeMem(const TWord op, const TWord value)
 	{
 		memWritePeriphFFFFC0(getFieldValueMemArea<Inst>(op), getFieldValue<Inst, Field_pppppp>(op), value);
 	}

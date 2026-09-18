@@ -28,6 +28,14 @@ namespace dsp56k
 			m_hostWrite = _data;
 		}
 
+        bool hasHostInputSource() const { return bool(m_hostInputSource); }
+        // The host promises the input source's value only changes while this DSP is
+        // not executing, or inside one of its own peripheral events (a single-thread
+        // scheduler forwarding another processor's pin). The interpreter's polling
+        // skip may then treat the pin like a latched one.
+        void setHostInputStableWhileRunning(bool _stable) { m_hostInputStableWhileRunning = _stable; }
+        bool hostInputStableWhileRunning() const { return m_hostInputStableWhileRunning; }
+
 		TWord dspRead() const
 		{
 			// reading the data register returns the pin state: the host-driven level for
@@ -96,6 +104,7 @@ namespace dsp56k
 		CallbackDspWrite m_callbackDspWrite = []{};
 		CallbackConfigChanged m_callbackConfigChanged = []{};
 		std::function<TWord()> m_hostInputSource;
+		bool m_hostInputStableWhileRunning = false;
 	};
 
 	class EssiPort final : public Gpio

@@ -29,8 +29,25 @@ namespace dsp56k
 			// modulo or linear addressing
 			if (moduloMask)
 			{
-				if (modulo == -1)	// Multiple-wrap-around.
+				// Linear (modulo == 0) and multiple-wrap-around (modulo == -1) leave through one
+				// test: modulo + 1 is 1 or 0 for exactly these two. Linear is the common case and
+				// the modes alternate per register, so a second data-dependent branch here would
+				// cost more than the modulo arithmetic it skips. Unsigned add, no overflow UB.
+				if (static_cast<uint32_t>(modulo) + 1u <= 1u)
 				{
+					if (modulo == 0)	// Linear addressing.
+					{
+						// Identical to the modulo arm with modulo == 0: both fixups add zero and
+						// only the low 24 bits survive the final mask, so n needs no sign extension.
+						if constexpr (add)
+							r += n;
+						else
+							r -= n;
+						r &= 0x00ffffff;
+						return;
+					}
+
+					// Multiple-wrap-around.
 					auto temp = r & moduloMask;
 					r ^= temp;
 					if constexpr (add)

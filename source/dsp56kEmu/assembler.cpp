@@ -749,9 +749,13 @@ namespace dsp56k
 				TWord jjj;
 				if (!parseRegister_JJJ(ops[0], d != 0, jjj)) continue;
 
-				// For Tfr, Cmp_S1S2, Cmpm_S1S2: JJJ value 0 is not valid
-				if ((inst == Tfr || inst == Cmp_S1S2 || inst == Cmpm_S1S2) && jjj == 0)
-					continue;
+                // CMP/CMPM/TFR use the alternate JJJ table: 000 means the
+                // other accumulator; 001..011 are reserved (notably 001 in
+                // CMP overlaps MAXM). ADD/SUB instead use 001 for A/B.
+                if(inst == Tfr || inst == Cmp_S1S2 || inst == Cmpm_S1S2) {
+                    if(jjj == 1) jjj = 0;
+                    else if(jjj < 4) continue;
+                }
 
 				setFieldValue(word, inst, Field_JJJ, jjj);
 				setFieldValue(word, inst, Field_d, d);

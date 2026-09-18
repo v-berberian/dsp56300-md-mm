@@ -183,7 +183,8 @@ namespace dsp56k
 
 	void Timers::injectInterrupt(const TWord _vba, const uint32_t _index) const
 	{
-		const auto offset = Vba_TIMER0_Compare - m_vbaBase;
-		m_peripherals.getDSP().injectInterrupt(offset + _vba + (_index << 2));
+		// _vba is a DSP56362 vector. Rebase it onto this chip's TIMER0 compare
+		// vector: the DSP56303 keeps its timers at $24-$2E, the DSP56362 at $54-$5E.
+		m_peripherals.getDSP().injectInterrupt(m_vbaBase + (_vba - Vba_TIMER0_Compare) + (_index << 2));
 	}
 }

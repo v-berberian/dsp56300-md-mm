@@ -5,7 +5,10 @@
 
 namespace dsp56k
 {
-#ifdef __ANDROID__
+	// DSP56K_NO_MMU: the iPad build never maps the DSP address space through
+	// the host MMU (shm_open is denied on iOS). It shares the Android stub, and
+	// Memory::hasMmuSupport() becomes a compile-time false.
+#if defined(__ANDROID__) || defined(DSP56K_NO_MMU)
 	class MemoryBuffer
 	{
 	public:

@@ -517,6 +517,11 @@ namespace dsp56k
 			if (!isLoopBody)
 				return false;
 
+			// One iteration must always return to the scheduler. ARM cannot
+			// encode TST #0, and no loop-back test is needed in this case.
+			if (m_config.maxDoIterations == 1)
+				return false;
+
 			const SkipLabel skip(m_asm);
 			if(m_config.maxDoIterations)
 			{

@@ -198,6 +198,10 @@ namespace dsp56k
 		// Notify the port when an interrupt vector is serviced.
 		void onInterruptDispatched(TWord _vba);
 
+		// Detect interrupt return and release a queued command. exec() polls this;
+		// the peripherals also poll it on ticks that skip exec().
+		void pollHostCommandCompletion();
+
 		bool hostCommandArbitration() const { return m_hostCommandArbitration; }
 
 		// HC clears on acceptance, not on interrupt return. A command queued
@@ -224,9 +228,6 @@ namespace dsp56k
 	private:
 		// Suppress mainline HRX consumption while a command can preempt it.
 		bool hostCommandHoldActive() const;
-
-		// Detect interrupt return and release a queued command.
-		void pollHostCommandCompletion();
 
 		// Publish and inject a host-command vector.
 		void dispatchHostCommandNow(TWord _vba);

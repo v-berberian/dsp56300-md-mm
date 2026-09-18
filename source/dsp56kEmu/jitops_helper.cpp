@@ -269,6 +269,13 @@ namespace dsp56k
 		}
 		else
 			assert(false && "support missing");
+
+		// This store bypasses DSP::setInterruptFunc, so keep the interpreter's mirrored deadline test in
+		// sync by hand (see DSP::m_checkInstr). Both modes above leave the plain peripherals callback, so
+		// the mirrored value is statically zero, i.e. always due.
+		static_assert(sizeof(m_block.dsp().m_checkInstr) == 8 && sizeof(m_block.dsp().m_checkCycle) == 8);
+		m_block.mem().mov(&m_block.dsp().m_checkInstr, static_cast<uint64_t>(0));
+		m_block.mem().mov(&m_block.dsp().m_checkCycle, static_cast<uint64_t>(0));
 	}
 
 	void JitOps::getDspProcessingMode(const JitRegGP& _dst) const

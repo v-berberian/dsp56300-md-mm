@@ -105,8 +105,8 @@ namespace dsp56k
 		decode_MMMRRR_read( mm, rrr );
 	}
 	
-	template<TWord W, TWord MMM> void DSP::opCE_Movex_ea(const TWord op)	{ move_ddddd_MMMRRR<Movex_ea, MemArea_X, W, MMM>(op); }
-	template<TWord W, TWord MMM> void DSP::opCE_Movey_ea(const TWord op)	{ move_ddddd_MMMRRR<Movey_ea, MemArea_Y, W, MMM>(op); }
+	template<TWord W, TWord MMM> ASMJIT_FORCE_INLINE void DSP::opCE_Movex_ea(const TWord op)	{ move_ddddd_MMMRRR<Movex_ea, MemArea_X, W, MMM>(op); }
+	template<TWord W, TWord MMM> ASMJIT_FORCE_INLINE void DSP::opCE_Movey_ea(const TWord op)	{ move_ddddd_MMMRRR<Movey_ea, MemArea_Y, W, MMM>(op); }
 
 	template<TWord W> void DSP::opCE_Movex_aa(const TWord op)	{ move_ddddd_absAddr<Movex_aa, MemArea_X, W>(op); }
 	template<TWord W> void DSP::opCE_Movey_aa(const TWord op)	{ move_ddddd_absAddr<Movey_aa, MemArea_Y, W>(op); }
@@ -365,10 +365,21 @@ namespace dsp56k
 			if( mmmrrr == MMMRRR_ImmediateData )
 				memWritePeriphFFFFC0( s, pp, ea );
 			else
-				memWritePeriphFFFFC0( s, pp, memRead( S, ea ) );
+			{
+				// The effective-address operand may itself name a peripheral.
+				// Keep its read side effects, just as readMemOrPeriph does in the JIT.
+				const auto value = isPeripheralAddress(ea) ? memReadPeriph(S, ea, Movep_ppea) : memRead(S, ea);
+				memWritePeriphFFFFC0(s, pp, value);
+			}
 		}
 		else
-			memWrite( S, ea, memReadPeriphFFFFC0( s, pp, Movep_ppea) );
+		{
+			const auto value = memReadPeriphFFFFC0(s, pp, Movep_ppea);
+			if(isPeripheralAddress(ea))
+				memWritePeriph(S, ea, value);
+			else
+				memWrite(S, ea, value);
+		}
 	}
 	inline void DSP::op_Movep_Xqqea(const TWord op)
 	{

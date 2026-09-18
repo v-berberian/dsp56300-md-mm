@@ -139,6 +139,10 @@ namespace dsp56k
 		emitToMemory("nop", pc);
 		dsp.setPC(0x100);
 		dsp.execInterpreter();
+#if defined(DSP56K_COOPERATIVE_INTERPRETER)
+        verify(dsp.getCycles() == 5);
+        for(int i=0;i<10;++i) dsp.execInterpreter();
+#endif
 		verify(dsp.getCycles() == 15); // DO (5) + five two-NOP iterations
 	}
 

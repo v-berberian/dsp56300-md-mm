@@ -1,6 +1,9 @@
 #include "cowmemory.h"
 
-#ifdef __APPLE__
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_OSX
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #endif
@@ -12,7 +15,7 @@ namespace dsp56k
 	bool CowMemory::allocate(const size_t _bytes)
 	{
 		clear();
-#ifdef __APPLE__
+#if defined(__APPLE__) && TARGET_OS_OSX
 		if (!_bytes) return false;
 		mach_vm_address_t address = 0;
 		if (mach_vm_allocate(mach_task_self(), &address, _bytes, VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
@@ -30,7 +33,7 @@ namespace dsp56k
 	{
 		if (this == &_source) return false;
 		clear();
-#ifdef __APPLE__
+#if defined(__APPLE__) && TARGET_OS_OSX
 		if (!_source.data()) return false;
 		mach_vm_address_t address = 0;
 		vm_prot_t current = 0, maximum = 0;
@@ -54,7 +57,7 @@ namespace dsp56k
 
 	void CowMemory::clear()
 	{
-#ifdef __APPLE__
+#if defined(__APPLE__) && TARGET_OS_OSX
 		if (m_data)
 			mach_vm_deallocate(mach_task_self(), reinterpret_cast<mach_vm_address_t>(m_data), m_size);
 #endif

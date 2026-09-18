@@ -247,6 +247,44 @@ namespace dsp56k
 		&DSP::op_Parallel,						// Parallel
 	};
 
+    // The low byte fully specifies a parallel ALU operation. Compile these
+    // 256 small handlers once, allowing constant operands and a direct ALU
+    // call while retaining the existing move and accumulator-latch rules.
+    constexpr Instruction parallelAluType(TWord byte) {
+        for(const auto& info : g_opcodes)
+            if(info.m_opcode[0] == '?'
+                && (byte & (info.m_mask0 | info.m_mask1)) == info.m_mask1)
+                return info.m_instruction;
+        return Invalid;
+    }
+    template<TWord Alu> ASMJIT_FORCE_INLINE void DSP::op_ParallelCached(TWord op) {
+        constexpr auto type = parallelAluType(Alu);
+        if constexpr(type == Invalid || g_opcodeFuncs[type] == nullptr) {
+            op_Parallel(op);
+        } else {
+            const auto preA = reg.a;
+            const auto preB = reg.b;
+            (this->*g_opcodeFuncs[type])(Alu);
+            const auto postA = reg.a;
+            const auto postB = reg.b;
+            reg.a = preA;
+            reg.b = preB;
+            (this->*m_opcodeCache[pcCurrentInstruction].opMove)(op);
+            if(postA != preA) reg.a = postA;
+            if(postB != preB) reg.b = postB;
+        }
+    }
+    template<size_t... I> constexpr auto parallelAluHandlers(std::index_sequence<I...>) {
+        return std::array<TInstructionFunc, sizeof...(I)>{&DSP::op_ParallelCached<I>...};
+    }
+    TInstructionFunc DSP::resolveParallelAlu(TWord op, Instruction alu) {
+        static constexpr auto handlers = parallelAluHandlers(std::make_index_sequence<256>{});
+        // The ordinary decoder enforces operand restrictions. Keep its handler
+        // for any ambiguous encoding instead of changing decoding precedence.
+        return parallelAluType(op & 255) == alu ? handlers[op & 255] : &DSP::op_Parallel;
+    }
+
+
 	constexpr size_t g_opcodeFuncsSize = sizeof(g_opcodeFuncs) / sizeof(g_opcodeFuncs[0]);
 	static_assert(g_opcodeFuncsSize <= 256, "jump table too large");
 
@@ -659,4 +697,211 @@ namespace dsp56k
 		std::vector<TInstructionFunc> m_jumpTable;
 		std::array<PermutationList, InstructionCount> m_permutationInfo;
 	};
+
+    inline DSP::OpcodeCacheEntry DSP::resolveCacheEntry() {
+        return {&DSP::op_ResolveCache, nullptr, nullptr, 0, &DSP::threadedOp<&DSP::op_ResolveCache>};
+    }
+    template<TInstructionFunc Func> void DSP56K_INTERPRETER_CC DSP::threadedOp(DSP* dsp, uint64_t target, TWord op, uint32_t cycles) {
+        const auto pc = dsp->pcCurrentInstruction;
+        if constexpr(g_traceSupported) dsp->getASM(op, dsp->m_opWordB);
+        if constexpr(!g_useJIT && Func == &DSP::op_ResolveCache)
+            cycles = dsp->getOpcodeCycles(pc);
+        dsp->m_currentOpLen = 1;
+        (dsp->*Func)(op);
+        if(dsp->pcCurrentInstruction == pc) {
+            ++dsp->m_instructions;
+            if constexpr(!g_useJIT) dsp->m_cycles += cycles;
+            if constexpr(g_traceSupported) dsp->traceOp();
+        }
+        dsp->finishInterpreterLoops();
+#if defined(DSP56K_COOPERATIVE_POLL_LOOPS)
+        if constexpr(!g_useJIT && (Func == &DSP::op_Bcc_xxx || Func == &DSP::op_Bcc_xxxx || Func == &DSP::op_Bra_xxx || Func == &DSP::op_Bra_xxxx)) {
+            if(dsp->reg.pc.var <= pc && pc - dsp->reg.pc.var <= 24 && dsp->m_cycles < target)
+                dsp->skipStablePollingLoop(pc, target);
+        }
+#endif
+        if(dsp->m_cycles >= target) return;
+#if defined(__clang__)
+        const auto nextOp = dsp->prepareInterpreterInstruction();
+        const auto& entry = dsp->m_opcodeCache[dsp->pcCurrentInstruction];
+        // Every slot is seeded by resolveCacheEntry(), so this is never null.
+        assert(entry.threaded);
+        [[clang::musttail]] return entry.threaded(dsp, target, nextOp, entry.cycles);
+#else
+        // Non-Clang hosts use the ordinary loop; never grow the call stack.
+        while(dsp->m_cycles < target) dsp->execInterpreter();
+#endif
+    }
+#if defined(__clang__) && defined(DSP56K_COOPERATIVE_INTERPRETER)
+    // A run of NOPs (opcode word 0) retires in one dispatch. Firmware paces itself
+    // with delay loops of hundreds of NOPs, and each one cost a full threaded
+    // dispatch (a fifth of the Machinedrum's whole budget on an iPad). This is
+    // exact: the same instructions and cycles are charged, and a run stops at
+    // the current DO loop's last address, at the next peripheral deadline and at
+    // the scheduler's target, so nothing observable moves. A run that is a whole
+    // DO body also charges the remaining iterations that fit the same bounds.
+    // Only the threaded path uses it; REP and other direct callers of the cache
+    // entry's op still see a plain single NOP.
+    void DSP56K_INTERPRETER_CC DSP::threadedNopRun(DSP* dsp, uint64_t target, TWord op, uint32_t cycles) {
+        const auto pc = dsp->pcCurrentInstruction;
+        if constexpr(g_traceSupported) dsp->getASM(op, dsp->m_opWordB);
+        dsp->m_currentOpLen = 1;
+        const uint64_t perCycles = cycles ? cycles : 1;
+        // Instructions that may retire before a deadline must be observed again.
+        uint64_t budget = 1;
+        if(dsp->m_checkInstr > dsp->m_instructions && dsp->m_checkCycle > dsp->m_cycles && target > dsp->m_cycles) {
+            budget = std::min<uint64_t>(dsp->m_checkInstr - dsp->m_instructions, (dsp->m_checkCycle - dsp->m_cycles) / perCycles);
+            budget = std::min<uint64_t>(budget, (target - dsp->m_cycles + perCycles - 1) / perCycles);
+            if(!budget) budget = 1;
+        }
+        uint32_t limit = static_cast<uint32_t>(std::min<uint64_t>(budget, 64));
+        const bool inLoop = dsp->sr_test_noCache(SR_LF) && dsp->reg.la.var >= pc;
+        if(inLoop) limit = static_cast<uint32_t>(std::min<uint64_t>(limit, dsp->reg.la.var - pc + 1));
+        const auto sizeP = dsp->mem.sizeP();
+        if(pc + limit > sizeP) limit = pc < sizeP ? static_cast<uint32_t>(sizeP - pc) : 1;
+        // Read the words the way the fetch does (memReadOpcode, the raw P array), not
+        // through the checked data-read path: the scan repeats on every peripheral
+        // tick, and the link ESSIs raise one every few dozen cycles.
+        uint32_t n = 1;
+        if constexpr(g_useAARTranslate) {
+            for(TWord a, b; n < limit; ++n) { dsp->memReadOpcode(pc + n, a, b); if(a) break; }
+        } else {
+            const TWord* program = dsp->mem.getMemAreaPtr(MemArea_P);
+            while(n < limit && program[pc + n] == 0) ++n;
+        }
+        uint64_t retired = n;
+        if(inLoop && pc + n - 1 == dsp->reg.la.var && dsp->reg.lc.var > 1 && hiword(dsp->reg.ss[dsp->ssIndex()]).var == pc) {
+            const uint64_t remaining = budget > n ? (budget - n) / n : 0;
+            const uint64_t k = std::min<uint64_t>(remaining, dsp->reg.lc.var - 1);
+            dsp->reg.lc.var -= static_cast<TWord>(k);
+            retired += k * n;
+        }
+        dsp->reg.pc.var = pc + n;
+        dsp->m_instructions += retired;
+        dsp->m_cycles += retired * cycles;
+        if constexpr(g_traceSupported) dsp->traceOp();
+        dsp->finishInterpreterLoops();
+        if(dsp->m_cycles >= target) return;
+        const auto nextOp = dsp->prepareInterpreterInstruction();
+        const auto& entry = dsp->m_opcodeCache[dsp->pcCurrentInstruction];
+        assert(entry.threaded);
+        [[clang::musttail]] return entry.threaded(dsp, target, nextOp, entry.cycles);
+    }
+#endif
+    void DSP::execInterpreterThreaded(uint64_t targetCycles) noexcept {
+#if !defined(__clang__)
+        do { execInterpreter(); } while(m_cycles < targetCycles);
+#else
+        if constexpr(g_useJIT) {
+            if(m_opcodeCache.empty()) clearOpcodeCache();
+            // Explicit interpreter diagnostics in JIT binaries do not charge
+            // cycles. A single-step entry is still available for parity tests.
+            targetCycles = 0;
+        }
+        // Other processors may have changed a polled register while this DSP
+        // was yielded, even if it resumes midway through a polling iteration.
+        ++m_peripheralEpoch;
+        const auto op = prepareInterpreterInstruction();
+        const auto& entry = m_opcodeCache[pcCurrentInstruction];
+        assert(entry.threaded);
+        entry.threaded(this, targetCycles, op, entry.cycles);
+#endif
+    }
+    struct ThreadedHandlerPair { TInstructionFunc op; TThreadedInstructionFunc threaded; };
+    template<TInstructionFunc Op> constexpr TThreadedInstructionFunc baseThreadedHandler() {
+        if constexpr(Op == nullptr) return nullptr;
+        else return &DSP::threadedOp<Op>;
+    }
+    template<size_t... I> constexpr auto baseThreadedHandlers(std::index_sequence<I...>) {
+        return std::array<ThreadedHandlerPair, sizeof...(I)>{
+            ThreadedHandlerPair{g_opcodeFuncs[I], baseThreadedHandler<g_opcodeFuncs[I]>()}...};
+    }
+    template<size_t... I> constexpr auto aluThreadedHandlers(std::index_sequence<I...>) {
+        return std::array<ThreadedHandlerPair, sizeof...(I)>{
+            ThreadedHandlerPair{&DSP::op_ParallelCached<I>, &DSP::threadedOp<&DSP::op_ParallelCached<I>>}...};
+    }
+    template<typename Functor, Instruction I, size_t N, Field... Fields>
+    constexpr ThreadedHandlerPair threadedPermutation() {
+        constexpr auto perm = getPermutationFromPack<Functor, I, N, Fields...>(FieldSequence<Fields...>{});
+        return {perm.func, &DSP::threadedOp<perm.func>};
+    }
+    template<typename Functor, Instruction I, Field... Fields, size_t... N>
+    constexpr auto permutationThreadedHandlers(std::index_sequence<N...>) {
+        return std::array<ThreadedHandlerPair, sizeof...(N)>{threadedPermutation<Functor, I, N, Fields...>()...};
+    }
+    TThreadedInstructionFunc DSP::resolveThreaded(TInstructionFunc op) {
+        static constexpr auto base = baseThreadedHandlers(std::make_index_sequence<g_opcodeFuncsSize>{});
+        static constexpr auto alu = aluThreadedHandlers(std::make_index_sequence<256>{});
+        const auto find = [op](const auto& handlers) -> TThreadedInstructionFunc {
+            for(const auto& handler : handlers) if(handler.op == op) return handler.threaded;
+            return nullptr;
+        };
+        if(auto f = find(base)) return f;
+        if(auto f = find(alu)) return f;
+#define DSP_THREADED_PERMS(Functor, Inst, ...) \
+        { static constexpr auto table = permutationThreadedHandlers<Functor, Inst, __VA_ARGS__>(std::make_index_sequence<permutationCount<Inst>()>{}); \
+          if(auto f = find(table)) return f; }
+        DSP_THREADED_PERMS(FunctorAbs, Abs, Field_d)
+        DSP_THREADED_PERMS(FunctorAndSD, And_SD, Field_d, Field_JJ)
+        DSP_THREADED_PERMS(FunctorMovexy, Movexy, Field_W, Field_w, Field_ee, Field_ff)
+        DSP_THREADED_PERMS(FunctorMovex_ea, Movex_ea, Field_W, Field_MMM)
+        DSP_THREADED_PERMS(FunctorMovex_aa, Movex_aa, Field_W)
+        DSP_THREADED_PERMS(FunctorMovey_ea, Movey_ea, Field_W, Field_MMM)
+        DSP_THREADED_PERMS(FunctorMovey_aa, Movey_aa, Field_W)
+#undef DSP_THREADED_PERMS
+        if(op == &DSP::op_Parallel) return &DSP::threadedOp<&DSP::op_Parallel>;
+        assert(false && "missing threaded opcode handler");
+        return &DSP::threadedOp<&DSP::op_ResolveCache>;
+    }
+
+    // Fuse common parallel move forms with their ALU byte at build time.
+    // These are ordinary signed native functions; no runtime code generation.
+    template<TInstructionFunc Move, TWord Alu> ASMJIT_FORCE_INLINE void DSP::op_ParallelFused(TWord op) {
+        constexpr auto type=parallelAluType(Alu);
+        if constexpr(type==Invalid || g_opcodeFuncs[type]==nullptr) {
+            op_Parallel(op);
+        } else {
+            const auto preA=reg.a, preB=reg.b;
+            (this->*g_opcodeFuncs[type])(Alu);
+            const auto postA=reg.a, postB=reg.b;
+            reg.a=preA; reg.b=preB;
+            (this->*Move)(op);
+            if(postA!=preA) reg.a=postA;
+            if(postB!=preB) reg.b=postB;
+        }
+    }
+    template<TInstructionFunc Move,size_t... Alu>
+    constexpr auto fusedHandlers(std::index_sequence<Alu...>) {
+        return std::array<InterpreterHandlers,sizeof...(Alu)>{
+            InterpreterHandlers{&DSP::op_ParallelFused<Move,Alu>,&DSP::threadedOp<&DSP::op_ParallelFused<Move,Alu>>}...};
+    }
+    template<TInstructionFunc Move> const InterpreterHandlers* fusedHandlers() {
+        static constexpr auto handlers=fusedHandlers<Move>(std::make_index_sequence<256>{});
+        return handlers.data();
+    }
+    InterpreterHandlers DSP::resolveParallelHandlers(TInstructionFunc move,TWord op,Instruction alu) {
+        if(parallelAluType(op&255)==alu) {
+#define DSP_FUSED_MOVE(...) \
+            if(move==__VA_ARGS__) return fusedHandlers<__VA_ARGS__>()[op&255];
+            DSP_FUSED_MOVE(&DSP::opCE_Movexy<1,1,1,0>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movexy<1,1,0,0>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movexy<0,1,2,0>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movexy<0,1,3,1>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movexy<1,0,0,2>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movexy<1,0,0,3>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movex_ea<1,1>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movex_ea<1,3>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movex_ea<1,4>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movex_ea<0,3>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movey_ea<1,3>)
+            DSP_FUSED_MOVE(&DSP::opCE_Movey_ea<0,3>)
+            DSP_FUSED_MOVE(&DSP::op_Movexr_ea)
+            DSP_FUSED_MOVE(&DSP::op_Moveyr_ea)
+            DSP_FUSED_MOVE(&DSP::op_Mover)
+#undef DSP_FUSED_MOVE
+        }
+        const auto handler=resolveParallelAlu(op,alu);
+        return {handler,resolveThreaded(handler)};
+    }
+
 }

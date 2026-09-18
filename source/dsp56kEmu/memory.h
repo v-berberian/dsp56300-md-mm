@@ -55,6 +55,11 @@ namespace dsp56k
 		
 		// number of words of 24-bit data for 3 banks (XYP)
 		std::array<TWord, MemArea_COUNT>					m_size;
+        static constexpr TWord readMask(TWord size) {
+            return size && !(size & (size - 1)) ? size - 1 : ~TWord{0};
+        }
+        const std::array<TWord, MemArea_COUNT> m_readMasks{
+            readMask(m_size[0]), readMask(m_size[1]), readMask(m_size[2])};
 		std::vector<TWord>									m_buffer;
 		std::array<TWord*, MemArea_COUNT>					m_mem;
 
@@ -101,6 +106,32 @@ namespace dsp56k
 		bool				dspWrite			( EMemArea& _area, TWord& _offset, TWord _value );
 		TWord				get					( EMemArea _area, TWord _offset ) const;
 		void				getOpcode			( TWord _offset, TWord& _wordA, TWord& _wordB ) const;
+
+        // Common Release accesses stay visible to the DSP compiler. Debugging,
+        // tracing and exceptional bounds behavior retain the checked path.
+        TWord getFast(EMemArea area, TWord offset) const {
+#if !defined(_DEBUG) && !DSP56300_DEBUGGER && !MEMORY_HEAT_MAP
+            memTranslateAddress(area, offset);
+#if defined(DSP56K_MIRROR_POW2_DATA_READS)
+            // A power-of-two bank mirrors, so its masked offset is in range by
+            // construction and the size compare is dead. Only a bank without a
+            // mask (~0, e.g. the 0xc00000 default) still needs the bounds check.
+            const auto mask = m_readMasks[area];
+            offset &= mask;
+            if(mask != ~TWord{0} || offset < size(area)) return m_mem[area][offset];
+#else
+            if(offset < size(area)) return m_mem[area][offset];
+#endif
+#endif
+            return get(area, offset);
+        }
+        void getOpcodeFast(TWord offset, TWord& wordA, TWord& wordB) const {
+#if !defined(_DEBUG) && !MEMORY_HEAT_MAP
+            wordA = p[offset]; wordB = p[offset + 1];
+#else
+            getOpcode(offset, wordA, wordB);
+#endif
+        }
 
 		bool				save				(const char* _file, EMemArea _area) const;
 		bool				saveAssembly		(const char* _file, TWord _offset, const TWord _count, bool _skipNops = true, bool _skipDC = false, const IPeripherals* _peripheralsX = nullptr, const IPeripherals* _peripheralsY = nullptr) const;
@@ -156,7 +187,15 @@ namespace dsp56k
 			return calcPMemSize(_memSize, _memSize, _bridgedMemoryAddress) + 2 * calcXYMemSize(_memSize, _bridgedMemoryAddress);
 		}
 
+#if defined(DSP56K_NO_MMU)
+		// The iPad build uses the MemoryBuffer stub (see memorybuffer.h), so the
+		// mapping can never be valid. A compile-time false lets the interpreter
+		// fold the m_mmuBuffer load and branch out of memTranslateAddress(),
+		// which runs on every data memory access.
+		bool hasMmuSupport() const { return false; }
+#else
 		bool hasMmuSupport() const { return m_mmuBuffer != nullptr; }
+#endif
 
 	private:
 		void				fillWithInitPattern	();

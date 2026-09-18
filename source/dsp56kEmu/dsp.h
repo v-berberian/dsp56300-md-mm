@@ -1,11 +1,13 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 
 #include "disasm.h"
 #include "dspconfig.h"
 #include "dspregs.h"
 #include "registers.h"
+#include "interpretercache.h"
 #include "memory.h"
 #include "utils.h"
 #include "instructioncache.h"
@@ -19,6 +21,28 @@
 #	define LOGJITPC(PC)		{}
 #endif
 
+// Cross-check the mirrored per-instruction deadline test (DSP::m_checkInstr/m_checkCycle) against the
+// live one on every interpreted instruction. On in debug builds, off in release builds; a release
+// validation run enables it with -DDSP56K_VALIDATE_PERIPHERAL_CHECK=1.
+#ifndef DSP56K_VALIDATE_PERIPHERAL_CHECK
+#	if defined(NDEBUG)
+#		define DSP56K_VALIDATE_PERIPHERAL_CHECK 0
+#	else
+#		define DSP56K_VALIDATE_PERIPHERAL_CHECK 1
+#	endif
+#endif
+
+// Internal-only calling convention: every handler and caller is built together.
+// It avoids saving general registers again at each musttail dispatch boundary.
+#if defined(__clang__)
+#if __has_attribute(preserve_none)
+#define DSP56K_INTERPRETER_CC __attribute__((preserve_none))
+#endif
+#endif
+#ifndef DSP56K_INTERPRETER_CC
+#define DSP56K_INTERPRETER_CC
+#endif
+
 namespace dsp56k
 {
 	class Memory;
@@ -30,12 +54,16 @@ namespace dsp56k
 	class AotRuntime;
 	class DebuggerInterface;
 	class DSP;
+	struct InterpreterPollingLoop;
 	
 	using TInstructionFunc = void (DSP::*)(TWord _op);
+	using TThreadedInstructionFunc = void (DSP56K_INTERPRETER_CC *)(DSP*, uint64_t, TWord, uint32_t);
+    struct InterpreterHandlers { TInstructionFunc op; TThreadedInstructionFunc threaded; };
 
 	template<typename Ta, typename Tb> void dspExecPeripherals(DSP* _dsp) noexcept;
 
 	static constexpr bool g_useJIT = g_jitSupported;
+	inline constexpr bool g_traceSupported = false;
 
 	class DSP final
 	{
@@ -49,6 +77,7 @@ namespace dsp56k
 		friend class Jit;
 		friend class AotRuntime;
 		friend class DebuggerInterface;
+		friend class IPeripherals;		// peripheral deadline changes call refreshPeripheralCheck()
 
 		// _____________________________________________________________________________
 		// types
@@ -109,6 +138,15 @@ namespace dsp56k
 		ProcessingMode					m_processingMode = Default;
 		TInterruptFunc					m_interruptFunc;
 
+		// Mirror of the per-instruction "peripheral due or interrupt pending" test. The interpreter reads
+		// these two adjacent words instead of m_interruptFunc, m_execPeripheralsFunc and the perif[0]
+		// deadlines behind a dependent pointer load. While m_interruptFunc is the plain peripherals
+		// callback they hold perif[0]'s instruction and cycle deadlines, in every other processing mode
+		// both are zero, i.e. always due. Every writer of m_interruptFunc and every peripheral deadline
+		// change goes through refreshPeripheralCheck(); the JIT's emitted mode stores zero them directly.
+		uint64_t						m_checkInstr = 0;
+		uint64_t						m_checkCycle = 0;
+
 		const TJitFunc*					m_jitEntries = nullptr;
 		TWord							m_jitEntriesSize = 0;	// number of valid entries in m_jitEntries, see execJit()
 		bool							m_invalidPCReported = false;
@@ -135,16 +173,22 @@ namespace dsp56k
 			TInstructionFunc op;
 			TInstructionFunc opMove;
 			TInstructionFunc opAlu;
+			uint8_t cycles = 0;
+			TThreadedInstructionFunc threaded = nullptr;
 		};
 
 		// Interpreter-only per-PC dispatch metadata. JIT builds leave this empty
 		// during normal execution; an explicit execInterpreter() call initializes
 		// it lazily so interpreter diagnostics remain supported in a JIT binary.
-		std::vector<OpcodeCacheEntry>	m_opcodeCache;
+		InterpreterCache<OpcodeCacheEntry>	m_opcodeCache;
 
 		// Per-PC instruction cycle count, filled lazily in interpreter builds. JIT builds leave
-		// this vector empty because they account cycles per compiled block. 0 = not yet computed.
-		std::vector<uint8_t>			m_opcodeCycleCache;
+		// this cache empty because they account cycles per compiled block. 0 = not yet computed.
+		InterpreterCache<uint8_t>		m_opcodeCycleCache;
+        InterpreterCache<std::shared_ptr<InterpreterPollingLoop>> m_pollingLoops;
+        uint64_t m_programRevision=0, m_peripheralEpoch=0, m_skippedPollingInstructions=0;
+        std::vector<uint64_t> m_programPageRevisions;
+        void skipStablePollingLoop(TWord branchPC, uint64_t targetCycles);
 		
 		InstructionCache				cache;
 
@@ -227,9 +271,7 @@ namespace dsp56k
 			}
 			else
 			{
-				do
-					execInterpreter();
-				while(m_cycles < _targetCycles);
+				execInterpreterThreaded(_targetCycles);
 			}
 		}
 
@@ -284,6 +326,41 @@ namespace dsp56k
 			m_jit.getTrampoline().execOne(&reg, pc, m_jitEntries[pc]);
 		}
 
+        uint64_t getSkippedPollingInstructions() const { return m_skippedPollingInstructions; }
+        void execInterpreterThreaded(uint64_t targetCycles = 0) noexcept;
+        template<TInstructionFunc Func> static void DSP56K_INTERPRETER_CC threadedOp(DSP*, uint64_t, TWord, uint32_t);
+        static void DSP56K_INTERPRETER_CC threadedNopRun(DSP*, uint64_t, TWord, uint32_t);
+        // Seed value for every dispatch slot. Carries the threaded handler so the
+        // per-instruction dispatch never has to test it for null.
+        static OpcodeCacheEntry resolveCacheEntry();
+        static TThreadedInstructionFunc resolveThreaded(TInstructionFunc);
+        ASMJIT_FORCE_INLINE TWord prepareInterpreterInstruction() noexcept {
+#if DSP56K_VALIDATE_PERIPHERAL_CHECK
+            // A mismatch means a writer of m_interruptFunc or of a peripheral deadline bypassed refreshPeripheralCheck().
+            if((m_instructions >= m_checkInstr || m_cycles >= m_checkCycle)
+                != (m_interruptFunc != m_execPeripheralsFunc || perif[0]->isDue(m_instructions, m_cycles)))
+                std::abort();
+#endif
+            // Same test as m_interruptFunc != m_execPeripheralsFunc || perif[0]->isDue(...), see m_checkInstr.
+            if(m_instructions >= m_checkInstr || m_cycles >= m_checkCycle) {
+                ++m_peripheralEpoch;
+                m_interruptFunc(this);
+            }
+#if DSP56300_DEBUGGER
+            if(m_debugger) m_debugger->onExec(getPC().var);
+#endif
+            pcCurrentInstruction = reg.pc.toWord();
+            return fetchPC();
+        }
+        ASMJIT_FORCE_INLINE void finishInterpreterLoops() noexcept {
+#if defined(DSP56K_COOPERATIVE_INTERPRETER)
+            while(sr_test_noCache(SR_LF) && reg.pc.var == reg.la.var + 1) {
+                if(reg.lc.var <= 1) do_end();
+                else { --reg.lc.var; setPC(hiword(reg.ss[ssIndex()])); break; }
+            }
+#endif
+        }
+
 		ASMJIT_FORCE_INLINE void execInterpreter() noexcept
 		{
 			// JIT-capable test and diagnostic binaries may explicitly exercise the
@@ -294,18 +371,9 @@ namespace dsp56k
 					clearOpcodeCache();
 			}
 
-			m_interruptFunc(this);
-
-#if DSP56300_DEBUGGER
-			if(m_debugger)
-				m_debugger->onExec(getPC().var);
-#endif
-
-			pcCurrentInstruction = reg.pc.toWord();
-
-			const auto op = fetchPC();
-
-			execOp(op);
+            const auto op=prepareInterpreterInstruction();
+            execOp(op);
+            finishInterpreterLoops();
 		}
 
 		template<typename Ta, typename Tb> void execPeriph() noexcept
@@ -501,7 +569,46 @@ namespace dsp56k
 			return ret;
 		}
 
-		void 	execOp							(TWord op);
+		// Re-derive m_checkInstr/m_checkCycle, see there. getTargetCycle() is UINT64_MAX without a cycle
+		// deadline, which never compares due, exactly like isDue().
+		ASMJIT_FORCE_INLINE void refreshPeripheralCheck() noexcept
+		{
+			const bool fast = m_interruptFunc == m_execPeripheralsFunc;
+			m_checkInstr = fast ? perif[0]->getTargetClock() : 0;
+			m_checkCycle = fast ? perif[0]->getTargetCycle() : 0;
+		}
+
+		// The only way C++ code may change m_interruptFunc: keeps the mirrored test in sync.
+		ASMJIT_FORCE_INLINE void setInterruptFunc(const TInterruptFunc _func) noexcept
+		{
+			m_interruptFunc = _func;
+			refreshPeripheralCheck();
+		}
+
+	ASMJIT_FORCE_INLINE void execOp(const TWord op)
+	{
+		if constexpr(g_traceSupported) getASM(op, m_opWordB);
+
+		m_currentOpLen = 1;
+
+		const TWord currentOp = pcCurrentInstruction;
+		const auto& opCache = m_opcodeCache[currentOp];
+		const auto cycles = g_useJIT ? 0 : (opCache.cycles ? opCache.cycles : getOpcodeCycles(currentOp));
+
+		(this->*opCache.op)(op);
+
+		if(pcCurrentInstruction == currentOp)
+		{
+			++m_instructions;
+
+			if constexpr(!g_useJIT)
+				m_cycles += cycles;
+
+			if(g_traceSupported && pcCurrentInstruction == currentOp)
+				traceOp();
+		}
+	}
+
 
 		void	exec_jump						(const TInstructionFunc& _func, TWord _op);
 		
@@ -960,7 +1067,12 @@ namespace dsp56k
 		void	notifyProgramMemWrite(TWord _offset);
 		
 		TWord	memRead				( EMemArea _area, TWord _offset ) const;
-		void	memReadOpcode		( TWord _offset, TWord& _wordA, TWord& _wordB ) const;
+	ASMJIT_FORCE_INLINE void memReadOpcode(TWord _offset, TWord& _wordA, TWord& _wordB) const
+	{
+		if constexpr(g_useAARTranslate) aarTranslate(MemArea_P, _offset);
+		mem.getOpcodeFast(_offset, _wordA, _wordB);
+	}
+
 		TWord	memReadPeriph		( EMemArea _area, TWord _offset, Instruction _inst) const;
 		TWord	memReadPeriphFFFF80	( EMemArea _area, TWord _offset, Instruction _inst) const;
 		TWord	memReadPeriphFFFFC0	( EMemArea _area, TWord _offset, Instruction _inst) const;
@@ -1213,6 +1325,10 @@ namespace dsp56k
 		void op_Wait(TWord _op);
 		void op_ResolveCache(TWord op);
 		void op_Parallel(TWord op);
+		template<TWord Alu> void op_ParallelCached(TWord op);
+        template<TInstructionFunc Move, TWord Alu> void op_ParallelFused(TWord op);
+        static InterpreterHandlers resolveParallelHandlers(TInstructionFunc move,TWord op,Instruction alu);
+		static TInstructionFunc resolveParallelAlu(TWord op, Instruction alu);
 
 		// ------------- function permutations -------------
 		static TInstructionFunc resolvePermutation(Instruction _inst, TWord _op);

@@ -167,6 +167,15 @@ namespace dsp56k
 
 		memTranslateAddress(_area, _offset);
 
+#if defined(DSP56K_MIRROR_POW2_DATA_READS)
+        // Match the JIT's physical power-of-two RAM address-line mirroring.
+        // Select the bridged bank before masking, as Jitmem::readDspMemory does.
+        // Instruction fetch uses getOpcode and is deliberately not mirrored.
+        const auto physicalSize = size(_area);
+        if(physicalSize && !(physicalSize & (physicalSize - 1)))
+            _offset &= physicalSize - 1;
+#endif
+
 #ifdef _DEBUG
 		assert(_offset < XIO_Reserved_High_First);
 		if(!m_memoryMap.memValidateAccess(_area, _offset, true))
@@ -382,6 +391,7 @@ namespace dsp56k
 	void Memory::memTranslateAddress(EMemArea& _area, const TWord& _addr) const
 	{
 		// A failed or unsupported MMU mapping is represented by a null buffer.
+		// With DSP56K_NO_MMU this is a compile-time false and folds away.
 		if(hasMmuSupport())
 			return;
 

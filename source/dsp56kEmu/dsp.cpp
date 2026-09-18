@@ -29,6 +29,7 @@
 #include "dsp_ops_move.inl"
 
 #include "dsp_jumptable.inl"
+#include "interpreterpolling.inl"
 
 #include "jit.h"
 
@@ -42,7 +43,6 @@
 
 namespace dsp56k
 {
-	constexpr bool g_traceSupported = false;
 
 	Jumptable g_jumptable;
 
@@ -100,6 +100,9 @@ namespace dsp56k
 		
 		perif[0]->setDSP(this);
 		perif[1]->setDSP(this);
+
+		// the mirrored deadline test can only be derived once the peripherals know us
+		refreshPeripheralCheck();
 
 		perif[0]->setSymbols(m_disasm);
 		perif[1]->setSymbols(m_disasm);
@@ -175,7 +178,7 @@ namespace dsp56k
 		// processing - freezing the DSP's clocks. Fall back to peripherals instead.
 		if(m_pendingInterrupts.empty())
 		{
-			m_interruptFunc = m_execPeripheralsFunc;
+			setInterruptFunc(m_execPeripheralsFunc);
 			m_execPeripheralsFunc(this);
 			return;
 		}
@@ -191,9 +194,9 @@ namespace dsp56k
 				m_pendingInterrupts.pop_front();
 
 				if (m_pendingInterrupts.empty())
-					m_interruptFunc = m_execPeripheralsFunc;
+					setInterruptFunc(m_execPeripheralsFunc);
 				else
-					m_interruptFunc = &dspExecInterrupts;
+					setInterruptFunc(&dspExecInterrupts);
 			}
 
 			return;
@@ -227,6 +230,7 @@ namespace dsp56k
 
 	void DSP::execInterrupt(const TWord vba)
 	{
+
 		pcCurrentInstruction = vba;
 		m_processingMode = FastInterrupt;
 
@@ -249,7 +253,7 @@ namespace dsp56k
 			if(m_processingMode != LongInterrupt)
 			{
 				m_processingMode = DefaultPreventInterrupt;
-				m_interruptFunc = &dspExecDefaultPreventInterrupt;
+				setInterruptFunc(&dspExecDefaultPreventInterrupt);
 				setPC(pc);
 			}
 			else
@@ -279,7 +283,7 @@ namespace dsp56k
 
 				// fast interrupt done
 				m_processingMode = DefaultPreventInterrupt;
-				m_interruptFunc = &dspExecDefaultPreventInterrupt;
+				setInterruptFunc(&dspExecDefaultPreventInterrupt);
 			}
 			else if(jumped)
 			{
@@ -298,13 +302,13 @@ namespace dsp56k
 				sr_clear(static_cast<CCRMask>(SR_S1 | SR_S0 | SR_SA | SR_LF));
 
 				m_processingMode = LongInterrupt;
-				m_interruptFunc = &dspExecNop;
+				setInterruptFunc(&dspExecNop);
 			}
 			else
 			{
 				// Default Processing, no interrupt
 				m_processingMode = DefaultPreventInterrupt;
-				m_interruptFunc = &dspExecDefaultPreventInterrupt;
+				setInterruptFunc(&dspExecDefaultPreventInterrupt);
 			}
 		}
 	}
@@ -314,9 +318,9 @@ namespace dsp56k
 		m_processingMode = Default;
 
 		if(m_pendingInterrupts.empty())
-			m_interruptFunc = m_execPeripheralsFunc;
+			setInterruptFunc(m_execPeripheralsFunc);
 		else
-			m_interruptFunc = &dspExecInterrupts;
+			setInterruptFunc(&dspExecInterrupts);
 	}
 
 	void DSP::terminate()
@@ -397,28 +401,6 @@ namespace dsp56k
 		return std::string(ss.str());
 	}
 
-	void DSP::execOp(const TWord op)
-	{
-		getASM(op, m_opWordB);
-
-		m_currentOpLen = 1;
-
-		const TWord currentOp = pcCurrentInstruction;
-		const auto& opCache = m_opcodeCache[currentOp];
-
-		exec_jump(opCache.op, op);
-
-		if(pcCurrentInstruction == currentOp)
-		{
-			++m_instructions;
-
-			if constexpr(!g_useJIT)
-				m_cycles += getOpcodeCycles(currentOp);
-
-			if(g_traceSupported && pcCurrentInstruction == currentOp)
-				traceOp();
-		}
-	}
 
 	void DSP::exec_jump(const TInstructionFunc& _func, TWord _op)
 	{
@@ -580,6 +562,12 @@ namespace dsp56k
 		
 		sr_set( SR_LF );
 
+#if defined(DSP56K_COOPERATIVE_INTERPRETER)
+        // Return to the multi-processor scheduler after the DO instruction.
+        // Loop completion is handled by execInterpreter after each instruction.
+        return true;
+#endif
+
 		if constexpr(!g_useJIT)
 			m_cycles += getOpcodeCycles(pcCurrentInstruction);
 
@@ -658,6 +646,7 @@ namespace dsp56k
 		const auto& opCache = m_opcodeCache[pcCurrentInstruction];
 
 		const auto& func = opCache.op;
+		const auto repeatedCycles = g_useJIT ? 0 : getOpcodeCycles(repeatedOpPC);
 
 		while( reg.lc.var > 0 )
 		{
@@ -665,7 +654,7 @@ namespace dsp56k
 			(this->*func)(op);
 			++m_instructions;
 			if constexpr(!g_useJIT)
-				m_cycles += getOpcodeCycles(repeatedOpPC);
+				m_cycles += repeatedCycles;
 //			traceOp();
 		}
 
@@ -1130,13 +1119,14 @@ namespace dsp56k
 
 	void DSP::notifyProgramMemWrite(TWord _offset)
 	{
+        if(_offset/256 < m_programPageRevisions.size()) ++m_programPageRevisions[_offset/256];
 		// The cache can exist in a JIT build when a test or diagnostic explicitly
 		// enters the interpreter. Invalidate it when present without allocating it
 		// for the ordinary JIT-only product path.
-		if(_offset < m_opcodeCache.size())
-			m_opcodeCache[_offset].op = &DSP::op_ResolveCache;
-		if constexpr(!g_useJIT)
-			m_opcodeCycleCache[_offset] = 0;
+		if(auto* cached = m_opcodeCache.getAllocated(_offset))
+			*cached = resolveCacheEntry();
+		if(auto* cycles = m_opcodeCycleCache.getAllocated(_offset))
+			*cycles = 0;
 
 #if DSP56300_DEBUGGER
 		if(m_debugger)
@@ -1171,14 +1161,9 @@ namespace dsp56k
 
 		aarTranslate(_area, _offset);
 
-		return mem.get(_area, _offset);
+		return mem.getFast(_area, _offset);
 	}
 
-	void DSP::memReadOpcode(TWord _offset, TWord& _wordA, TWord& _wordB) const
-	{
-		aarTranslate(MemArea_P, _offset);
-		mem.getOpcode(_offset, _wordA, _wordB);
-	}
 
 	TWord DSP::memReadPeriph(EMemArea _area, TWord _offset, Instruction _inst) const
 	{
@@ -1343,7 +1328,7 @@ namespace dsp56k
 		m_pendingInterrupts.push_back({_interruptVectorAddress});
 
 		if(m_interruptFunc == m_execPeripheralsFunc)
-			m_interruptFunc = &dspExecInterrupts;
+			setInterruptFunc(&dspExecInterrupts);
 
 		return true;
 	}
@@ -1410,31 +1395,35 @@ namespace dsp56k
 
 	uint8_t DSP::getOpcodeCycles(const TWord _pc)
 	{
-		auto& cachedCycles = m_opcodeCycleCache[_pc];
+		auto cachedCycles = m_opcodeCycleCache[_pc];
 		if(!cachedCycles)
-			cachedCycles = static_cast<uint8_t>(std::min<uint32_t>(255, std::max<uint32_t>(1, calcOpcodeCycles(_pc))));
+			m_opcodeCycleCache.edit(_pc) = cachedCycles = static_cast<uint8_t>(std::min<uint32_t>(255, std::max<uint32_t>(1, calcOpcodeCycles(_pc))));
 		return cachedCycles;
 	}
 
 	void DSP::clearOpcodeCache()
 	{
+        ++m_programRevision;
+        m_pollingLoops.assign(mem.sizeP(), {});
+        m_programPageRevisions.assign((mem.sizeP()+255)/256,0);
 		m_opcodeCache.clear();
-		m_opcodeCache.resize(mem.sizeP(), {&DSP::op_ResolveCache});
+		m_opcodeCache.resize(mem.sizeP(), resolveCacheEntry());
 		if constexpr(!g_useJIT)
 			m_opcodeCycleCache.assign(mem.sizeP(), 0);
 	}
 
 	void DSP::clearOpcodeCache(const TWord _address)
 	{
+        if(_address/256 < m_programPageRevisions.size()) ++m_programPageRevisions[_address/256];
 		// Boot transfers can address outside the configured P-memory range.
 		// Memory::set ignores those writes; do not index the interpreter cycle
 		// cache or grow JIT dispatch metadata for an address that was not written.
 		if(_address >= mem.sizeP())
 			return;
-		if(_address < m_opcodeCache.size())
-			m_opcodeCache[_address].op = &DSP::op_ResolveCache;
-		if constexpr(!g_useJIT)
-			m_opcodeCycleCache[_address] = 0;
+		if(auto* cached = m_opcodeCache.getAllocated(_address))
+			*cached = resolveCacheEntry();
+		if(auto* cycles = m_opcodeCycleCache.getAllocated(_address))
+			*cycles = 0;
 		m_jit.notifyProgramMemWrite(_address);
 	}
 	
@@ -1635,11 +1624,11 @@ namespace dsp56k
 			// DSP's peripherals while it keeps retiring ops.
 			if(m_maxWaitInstructions && (m_instructions - waitStart) >= m_maxWaitInstructions)
 			{
-				m_interruptFunc = m_execPeripheralsFunc;
+				setInterruptFunc(m_execPeripheralsFunc);
 				return;
 			}
 		}
 
-		m_interruptFunc = &dspExecInterrupts;
+		setInterruptFunc(&dspExecInterrupts);
 	}
 }

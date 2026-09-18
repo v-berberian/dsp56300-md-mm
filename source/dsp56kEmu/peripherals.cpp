@@ -115,14 +115,32 @@ namespace dsp56k
 
 	void IPeripherals::setDelayCycles(const uint32_t _delayCycles) noexcept
 	{
+		m_woken.store(true, std::memory_order_relaxed);
 		m_delayCycles = std::min(m_delayCycles, _delayCycles);
 		m_targetClock = m_dsp->getInstructionCounter() + m_delayCycles;
+		m_dsp->refreshPeripheralCheck();
 	}
 
 	void IPeripherals::setCycleDeadline(const uint32_t _delayCycles) noexcept
 	{
 		m_targetCycle = m_dsp->getCycles() + _delayCycles;
 		m_hasCycleDeadline = true;
+		m_dsp->refreshPeripheralCheck();
+	}
+
+	void IPeripherals::clearCycleDeadline() noexcept
+	{
+		m_hasCycleDeadline = false;
+		if(m_dsp)
+			m_dsp->refreshPeripheralCheck();
+	}
+
+	void IPeripherals::resetDelayCycles(const uint64_t _instructionCount, const uint32_t _delayCycles) noexcept
+	{
+		m_delayCycles = _delayCycles;
+		m_targetClock = _instructionCount + _delayCycles;
+		if(m_dsp)
+			m_dsp->refreshPeripheralCheck();
 	}
 
 	// _____________________________________________________________________________
@@ -380,11 +398,43 @@ namespace dsp56k
 		{
 			clearCycleDeadline();
 		}
-		const auto hdiDelay = m_hi08.exec();
-		const auto timerDelay = m_timers.exec();
-		const auto dmaDelay = m_dma.exec();
-		const auto delay = std::min({essiDelay, hdiDelay, timerDelay, dmaDelay});
-		return delay;
+		// The link ESSIs tick every few dozen instructions. Executing the host port,
+		// the timers and the DMA on each tick only re-derived deadlines they had
+		// already reported: each is exact about when it next has work, and every
+		// asynchronous change (a host write, a register write, a DMA request) wakes
+		// all of them through setDelayCycles(). A wake raised by one of them while
+		// they execute is honored on the next tick, where the unconditional
+		// execution used to observe it as well.
+		const auto now = getDSP().getInstructionCounter();
+		if(takeWake())
+			m_hdiDue = m_timerDue = m_dmaDue = now;
+		uint32_t hdiDelay, timerDelay, dmaDelay;
+		if(now >= m_hdiDue)
+		{
+			hdiDelay = m_hi08.exec();
+			m_hdiDue = now + hdiDelay;
+		}
+		else
+		{
+			// A host command's interrupt return is detected by polling, not by a wake.
+			m_hi08.pollHostCommandCompletion();
+			hdiDelay = static_cast<uint32_t>(m_hdiDue - now);
+		}
+		if(now >= m_timerDue)
+		{
+			timerDelay = m_timers.exec();
+			m_timerDue = now + timerDelay;
+		}
+		else
+			timerDelay = static_cast<uint32_t>(m_timerDue - now);
+		if(now >= m_dmaDue)
+		{
+			dmaDelay = m_dma.exec();
+			m_dmaDue = now + dmaDelay;
+		}
+		else
+			dmaDelay = static_cast<uint32_t>(m_dmaDue - now);
+		return std::min({essiDelay, hdiDelay, timerDelay, dmaDelay});
 	}
 
 	void Peripherals56303::reset()
@@ -392,6 +442,7 @@ namespace dsp56k
 		m_essi0.reset();
 		m_essi1.reset();
 		m_hi08.reset();
+		m_hdiDue = m_timerDue = m_dmaDue = 0;
 	}
 
 	void Peripherals56303::setSymbols(Disassembler& _disasm) const

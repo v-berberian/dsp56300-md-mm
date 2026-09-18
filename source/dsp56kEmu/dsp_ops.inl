@@ -244,13 +244,13 @@ namespace dsp56k
 	inline void DSP::op_Do_ea(const TWord op)
 	{
 		const auto addr = absAddressExt<Do_ea>();
-		const auto loopCount = effectiveAddress<Do_ea>(op);
+		const auto loopCount = readMem<Do_ea>(op);
 		do_exec(loopCount, addr);
 	}
 	inline void DSP::op_Do_aa(const TWord op)
 	{
 		const auto addr = absAddressExt<Do_aa>();
-		const auto loopCount = effectiveAddress<Do_aa>(op);
+		const auto loopCount = readMem<Do_aa>(op);
 		do_exec(loopCount, addr);
 	}
 	inline void DSP::op_Do_xxx(const TWord op)
@@ -282,8 +282,8 @@ namespace dsp56k
 	}
 	inline void DSP::op_Dor_aa(const TWord op)
 	{
-		const auto loopCount = effectiveAddress<Do_aa>(op);
-		const auto displacement = pcRelativeAddressExt<Dor_ea>();
+		const auto loopCount = readMem<Dor_aa>(op);
+		const auto displacement = pcRelativeAddressExt<Dor_aa>();
 		do_exec(loopCount, pcCurrentInstruction + displacement);
 	}
 	inline void DSP::op_Dor_xxx(const TWord op)
@@ -489,7 +489,7 @@ namespace dsp56k
 	{
 		popPCSR();
 		m_processingMode = DefaultPreventInterrupt;
-		m_interruptFunc = &dspExecDefaultPreventInterrupt;
+		setInterruptFunc(&dspExecDefaultPreventInterrupt);
 	}
 	inline void DSP::op_Rts(const TWord op)
 	{
@@ -549,11 +549,16 @@ namespace dsp56k
 	}
 	inline void DSP::op_ResolveCache(const TWord op)
 	{
-		auto& cacheEntry = m_opcodeCache[pcCurrentInstruction];
+		auto& cacheEntry = m_opcodeCache.edit(pcCurrentInstruction);
+		if constexpr(!g_useJIT) cacheEntry.cycles = getOpcodeCycles(pcCurrentInstruction);
 		cacheEntry.op = &DSP::op_Nop;
+        cacheEntry.threaded = &DSP::threadedOp<&DSP::op_Nop>;
 
 		if( !op )
 		{
+#if defined(__clang__) && defined(DSP56K_COOPERATIVE_INTERPRETER)
+			if constexpr(!g_useJIT) cacheEntry.threaded = &DSP::threadedNopRun;
+#endif
 			op_Nop(0);
 			return;
 		}
@@ -570,7 +575,8 @@ namespace dsp56k
 
 			cacheEntry.op = resolvePermutation(oi->m_instruction, op);
 
-			exec_jump(cacheEntry.op, op);
+			cacheEntry.threaded = resolveThreaded(cacheEntry.op);
+            exec_jump(cacheEntry.op, op);
 			return;
 		}
 		const auto* oiMove = m_opcodes.findParallelMoveOpcodeInfo(op);
@@ -599,7 +605,8 @@ namespace dsp56k
 			if(oiAlu)
 			{
 				cacheEntry.op = resolvePermutation(oiAlu->m_instruction, op);
-				exec_jump(cacheEntry.op, op);
+				cacheEntry.threaded = resolveThreaded(cacheEntry.op);
+            exec_jump(cacheEntry.op, op);
 			}
 			else
 			{
@@ -614,7 +621,8 @@ namespace dsp56k
 				const auto ifccFunc = resolvePermutation(oiMove->m_instruction, op);
 				cacheEntry.op = ifccFunc;
 				cacheEntry.opAlu = resolvePermutation(oiAlu->m_instruction, op);
-				exec_jump(cacheEntry.op, op);
+				cacheEntry.threaded = resolveThreaded(cacheEntry.op);
+            exec_jump(cacheEntry.op, op);
 			}
 			else
 			{
@@ -626,15 +634,18 @@ namespace dsp56k
 			{
 				// if there is no ALU instruction, do only the move
 				cacheEntry.op = resolvePermutation(oiMove->m_instruction, op);
-				exec_jump(cacheEntry.op, op);
+				cacheEntry.threaded = resolveThreaded(cacheEntry.op);
+            exec_jump(cacheEntry.op, op);
 			}
 			else
 			{
 				// call special function that simulates latch registers for alu op + parallel move
-				cacheEntry.op = &DSP::op_Parallel;
-				cacheEntry.opMove = resolvePermutation(oiMove->m_instruction, op);
-				cacheEntry.opAlu = resolvePermutation(oiAlu->m_instruction, op);
-				op_Parallel(op);
+                cacheEntry.opMove = resolvePermutation(oiMove->m_instruction, op);
+                cacheEntry.opAlu = resolvePermutation(oiAlu->m_instruction, op);
+                const auto handlers = resolveParallelHandlers(cacheEntry.opMove, op, oiAlu->m_instruction);
+                cacheEntry.op = handlers.op;
+                cacheEntry.threaded = handlers.threaded;
+                exec_jump(cacheEntry.op, op);
 			}
 		}
 	}

@@ -50,7 +50,7 @@ namespace dsp56k
 		return false;
 	}
 
-	template<typename T> T DSP::decode_ddddd_read(const TWord _ddddd )
+	template<typename T> ASMJIT_FORCE_INLINE T DSP::decode_ddddd_read(const TWord _ddddd )
 	{
 		T res;
 		// TODO: can be replaced with the six bit version, numbers are identical anyway
@@ -81,7 +81,7 @@ namespace dsp56k
 		return res;
 	}
 
-	template<typename T> bool DSP::decode_ddddd_write(const TWord _ddddd, const T& _val )
+	template<typename T> ASMJIT_FORCE_INLINE bool DSP::decode_ddddd_write(const TWord _ddddd, const T& _val )
 	{
 		switch( _ddddd )
 		{
@@ -426,7 +426,7 @@ namespace dsp56k
 		assert(0 && "invalid ff value");
 	}
 
-	template<TWord _mmm> TWord DSP::decode_MMMRRR_read( TWord _rrr )
+	template<TWord _mmm> ASMJIT_FORCE_INLINE TWord DSP::decode_MMMRRR_read( TWord _rrr )
 	{
 		if constexpr(_mmm == 6)																	/* 110         */
 			return fetchOpWordB();
@@ -458,7 +458,7 @@ namespace dsp56k
 		return a;
 	}
 
-	inline TWord DSP::decode_MMMRRR_read( TWord _mmm, TWord _rrr )
+	ASMJIT_FORCE_INLINE TWord DSP::decode_MMMRRR_read( TWord _mmm, TWord _rrr )
 	{
 		switch(_mmm << 3 | _rrr)
 		{
@@ -501,7 +501,7 @@ namespace dsp56k
 		return a;
 	}
 
-	inline TWord DSP::decode_XMove_MMRRR( TWord _mm, TWord _rrr )
+	ASMJIT_FORCE_INLINE TWord DSP::decode_XMove_MMRRR( TWord _mm, TWord _rrr )
 	{
 		const TReg24	_n = reg.n[_rrr];
 		TReg24&			_r = reg.r[_rrr];

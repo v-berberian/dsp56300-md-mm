@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include "dsp56kBase/dspassert.h"
 
 #ifndef CHAR_BIT
@@ -31,8 +32,11 @@ namespace dsp56k
 		T var;
 
 		RegType() : var(0)													{}
-		RegType( const RegType<T,B>& _other ) : var(_other.var)				{}
-		RegType( RegType<T,B>&& _other ) noexcept : var(_other.var)			{}
+		// Plain value copies let the native ABI return a register in a register
+		// and let whole processor snapshots use a bulk copy. Keep initialization
+		// and explicit value conversions separate from these identity copies.
+		RegType(const RegType&) = default;
+		RegType(RegType&&) noexcept = default;
 		template<typename TYPE> explicit RegType( const TYPE& _var )		{ convert(*this,_var); }
 //		template<typename TYPE> explicit RegType( const TYPE _var )			{ convert(*this,_var); }
 
@@ -53,17 +57,8 @@ namespace dsp56k
 
 //		RegType<T,B>	operator - () const									{ return RegType<T,B>(-var); }
 
-		RegType& operator = (const RegType& other)
-		{
-			var = other.var;
-			return *this;
-		}
-
-		RegType& operator = (RegType&& other) noexcept
-		{
-			var = other.var;
-			return *this;
-		}
+		RegType& operator = (const RegType&) = default;
+		RegType& operator = (RegType&&) noexcept = default;
 
 		template<typename D> D signextend() const
 		{
@@ -85,6 +80,8 @@ namespace dsp56k
 	typedef RegType<int32_t,24>		TReg24;
 	typedef RegType<int64_t,48>		TReg48;
 	typedef RegType<int64_t,56>		TReg56;
+	static_assert(std::is_trivially_copyable_v<TReg24> && sizeof(TReg24) == sizeof(int32_t));
+	static_assert(std::is_trivially_copyable_v<TReg56> && sizeof(TReg56) == sizeof(int64_t));
 
 	typedef RegType<TWord,24>		TMem;
 
