@@ -704,19 +704,19 @@ namespace dsp56k
     template<TInstructionFunc Func> void DSP56K_INTERPRETER_CC DSP::threadedOp(DSP* dsp, uint64_t target, TWord op, uint32_t cycles) {
         const auto pc = dsp->pcCurrentInstruction;
         if constexpr(g_traceSupported) dsp->getASM(op, dsp->m_opWordB);
-        if constexpr(!g_useJIT && Func == &DSP::op_ResolveCache)
-            cycles = dsp->getOpcodeCycles(pc);
+        if constexpr(Func == &DSP::op_ResolveCache)
+            if(!dsp->usesJit()) cycles = dsp->getOpcodeCycles(pc);
         dsp->m_currentOpLen = 1;
         (dsp->*Func)(op);
         if(dsp->pcCurrentInstruction == pc) {
             ++dsp->m_instructions;
-            if constexpr(!g_useJIT) dsp->m_cycles += cycles;
+            if(!dsp->usesJit()) dsp->m_cycles += cycles;
             if constexpr(g_traceSupported) dsp->traceOp();
         }
         dsp->finishInterpreterLoops();
 #if defined(DSP56K_COOPERATIVE_POLL_LOOPS)
-        if constexpr(!g_useJIT && (Func == &DSP::op_Bcc_xxx || Func == &DSP::op_Bcc_xxxx || Func == &DSP::op_Bra_xxx || Func == &DSP::op_Bra_xxxx)) {
-            if(dsp->reg.pc.var <= pc && pc - dsp->reg.pc.var <= 24 && dsp->m_cycles < target)
+        if constexpr(Func == &DSP::op_Bcc_xxx || Func == &DSP::op_Bcc_xxxx || Func == &DSP::op_Bra_xxx || Func == &DSP::op_Bra_xxxx) {
+            if(!dsp->usesJit() && dsp->reg.pc.var <= pc && pc - dsp->reg.pc.var <= 24 && dsp->m_cycles < target)
                 dsp->skipStablePollingLoop(pc, target);
         }
 #endif
@@ -792,7 +792,7 @@ namespace dsp56k
 #if !defined(__clang__)
         do { execInterpreter(); } while(m_cycles < targetCycles);
 #else
-        if constexpr(g_useJIT) {
+        if(usesJit()) {
             if(m_opcodeCache.empty()) clearOpcodeCache();
             // Explicit interpreter diagnostics in JIT binaries do not charge
             // cycles. A single-step entry is still available for parity tests.

@@ -117,6 +117,7 @@ namespace dsp56k
 		// _____________________________________________________________________________
 		// members
 		//
+		const bool m_useJit;
 		Memory&							mem;
 		std::array<IPeripherals* const, 2>	perif;
 		
@@ -224,7 +225,8 @@ namespace dsp56k
 		// implementation
 		//
 	public:
-				DSP								( Memory& _memory, IPeripherals* _pX, IPeripherals* _pY );
+				DSP								( Memory& _memory, IPeripherals* _pX, IPeripherals* _pY, bool _useJit = g_useJIT );
+		bool usesJit() const noexcept { return g_useJIT && m_useJit; }
 
 		void 	resetHW							();
 		void 	resetSW							();
@@ -239,7 +241,7 @@ namespace dsp56k
 
 		ASMJIT_FORCE_INLINE void exec() noexcept
 		{
-			if(g_useJIT)
+			if(usesJit())
 				execJit();
 			else
 			{
@@ -257,7 +259,7 @@ namespace dsp56k
 			if(m_cycles >= _targetCycles)
 				return;
 
-			if constexpr(g_useJIT)
+			if(usesJit())
 			{
 				while(m_cycles < _targetCycles)
 				{
@@ -278,7 +280,7 @@ namespace dsp56k
 
 		ASMJIT_FORCE_INLINE void execInlinePeripheralCheck() noexcept
 		{
-			if(g_useJIT)
+			if(usesJit())
 				execJitImpl<true>();
 			else
 			{
@@ -371,7 +373,7 @@ namespace dsp56k
 		{
 			// JIT-capable test and diagnostic binaries may explicitly exercise the
 			// interpreter even though the product path never does.
-			if constexpr(g_useJIT)
+			if(usesJit())
 			{
 				if(m_opcodeCache.empty())
 					clearOpcodeCache();
@@ -599,7 +601,7 @@ namespace dsp56k
 
 		const TWord currentOp = pcCurrentInstruction;
 		const auto& opCache = m_opcodeCache[currentOp];
-		const auto cycles = g_useJIT ? 0 : (opCache.cycles ? opCache.cycles : getOpcodeCycles(currentOp));
+		const auto cycles = usesJit() ? 0 : (opCache.cycles ? opCache.cycles : getOpcodeCycles(currentOp));
 
 		(this->*opCache.op)(op);
 
@@ -607,7 +609,7 @@ namespace dsp56k
 		{
 			++m_instructions;
 
-			if constexpr(!g_useJIT)
+			if(!usesJit())
 				m_cycles += cycles;
 
 			if(g_traceSupported && pcCurrentInstruction == currentOp)

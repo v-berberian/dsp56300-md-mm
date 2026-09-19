@@ -550,14 +550,14 @@ namespace dsp56k
 	inline void DSP::op_ResolveCache(const TWord op)
 	{
 		auto& cacheEntry = m_opcodeCache.edit(pcCurrentInstruction);
-		if constexpr(!g_useJIT) cacheEntry.cycles = getOpcodeCycles(pcCurrentInstruction);
+		if(!usesJit()) cacheEntry.cycles = getOpcodeCycles(pcCurrentInstruction);
 		cacheEntry.op = &DSP::op_Nop;
         cacheEntry.threaded = &DSP::threadedOp<&DSP::op_Nop>;
 
 		if( !op )
 		{
 #if defined(__clang__) && defined(DSP56K_COOPERATIVE_INTERPRETER)
-			if constexpr(!g_useJIT) cacheEntry.threaded = &DSP::threadedNopRun;
+			if(!usesJit()) cacheEntry.threaded = &DSP::threadedNopRun;
 #endif
 			op_Nop(0);
 			return;

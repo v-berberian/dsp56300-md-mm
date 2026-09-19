@@ -116,10 +116,10 @@ namespace dsp56k
 		Jit::toJitPtr(_jit)->run(_pc);
 	}
 
-	Jit::Jit(DSP& _dsp) : m_dsp(_dsp), m_trampoline(_dsp), m_rt(g_useJIT ? new HostJitRuntime() : nullptr)
+	Jit::Jit(DSP& _dsp) : m_dsp(_dsp), m_trampoline(_dsp), m_rt(_dsp.usesJit() ? new HostJitRuntime() : nullptr)
 	{
 		// Interpreter hosts (including iPadOS) must never allocate executable code.
-		if constexpr(!g_useJIT) return;
+		if(!m_dsp.usesJit()) return;
 #ifdef __APPLE__
 		// One default table per DSP is prepared during construction. New DSP
 		// modes privately map it instead of filling large tables on first use.
@@ -366,7 +366,7 @@ namespace dsp56k
 
 	void Jit::checkModeChange() noexcept
 	{
-		if constexpr(!g_useJIT) return;
+		if(!m_dsp.usesJit()) return;
 		JitDspMode mode;
 
 		mode.initialize(dsp());
@@ -464,7 +464,7 @@ namespace dsp56k
 
 	void Jit::preallocateBlockRuntimeData(const size_t _count)
 	{
-		if constexpr(!g_useJIT) return;
+		if(!m_dsp.usesJit()) return;
 		while(m_blockRuntimeDatas.size() < _count)
 		{
 			m_blockRuntimeDatas.push_back(new JitBlockRuntimeData());

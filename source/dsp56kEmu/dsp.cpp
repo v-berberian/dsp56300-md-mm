@@ -83,8 +83,9 @@ namespace dsp56k
 	// _____________________________________________________________________________
 	// DSP
 	//
-	DSP::DSP(Memory& _memory, IPeripherals* _pX, IPeripherals* _pY)
-		: mem(_memory)
+	DSP::DSP(Memory& _memory, IPeripherals* _pX, IPeripherals* _pY, bool _useJit)
+		: m_useJit(g_useJIT && _useJit)
+		, mem(_memory)
 		, perif({_pX, _pY})
 		, pcCurrentInstruction(0xffffff)
 		, m_execPeripheralsFunc(findExecPeripheralsFunc(_pX, _pY))
@@ -110,7 +111,7 @@ namespace dsp56k
 		// Normal JIT execution uses JitBlockChain's dispatch/cache structures and
 		// never reads the interpreter opcode cache. Keep that large per-PC table
 		// absent unless this build actually executes through the interpreter.
-		if constexpr(!g_useJIT)
+		if(!usesJit())
 			clearOpcodeCache();
 
 		resetHW();
@@ -245,7 +246,7 @@ namespace dsp56k
 			m_debugger->onExec(vba);
 #endif
 
-		if(g_useJIT)
+		if(usesJit())
 		{
 			LOGJITPC(vba);
 			const auto pc = getPC();
@@ -386,7 +387,7 @@ namespace dsp56k
 		{
 			m_debugger->onAttach();
 
-			if constexpr(g_useJIT)
+			if(usesJit())
 				m_jit.onDebuggerAttached(*m_debugger);
 		}
 	}
@@ -568,7 +569,7 @@ namespace dsp56k
         return true;
 #endif
 
-		if constexpr(!g_useJIT)
+		if(!usesJit())
 			m_cycles += getOpcodeCycles(pcCurrentInstruction);
 
 		++m_instructions;
@@ -629,7 +630,7 @@ namespace dsp56k
 		const auto lcBackup = reg.lc;
 		reg.lc.var = _loopCount;
 
-		if constexpr(!g_useJIT)
+		if(!usesJit())
 			m_cycles += getOpcodeCycles(pcCurrentInstruction);
 
 		++m_instructions;
@@ -646,14 +647,14 @@ namespace dsp56k
 		const auto& opCache = m_opcodeCache[pcCurrentInstruction];
 
 		const auto& func = opCache.op;
-		const auto repeatedCycles = g_useJIT ? 0 : getOpcodeCycles(repeatedOpPC);
+		const auto repeatedCycles = usesJit() ? 0 : getOpcodeCycles(repeatedOpPC);
 
 		while( reg.lc.var > 0 )
 		{
 			--reg.lc.var;
 			(this->*func)(op);
 			++m_instructions;
-			if constexpr(!g_useJIT)
+			if(!usesJit())
 				m_cycles += repeatedCycles;
 //			traceOp();
 		}
@@ -1408,7 +1409,7 @@ namespace dsp56k
         m_programPageRevisions.assign((mem.sizeP()+255)/256,0);
 		m_opcodeCache.clear();
 		m_opcodeCache.resize(mem.sizeP(), resolveCacheEntry());
-		if constexpr(!g_useJIT)
+		if(!usesJit())
 			m_opcodeCycleCache.assign(mem.sizeP(), 0);
 	}
 
