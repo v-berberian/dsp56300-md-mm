@@ -879,6 +879,54 @@ namespace dsp56k
         static constexpr auto handlers=fusedHandlers<Move>(std::make_index_sequence<256>{});
         return handlers.data();
     }
+    template<TWord Op, Instruction Move>
+    ASMJIT_FORCE_INLINE void DSP::op_ParallelStatic(TWord op) {
+        assert(op == Op);
+        constexpr auto type=parallelAluType(Op & 255);
+        static_assert(type!=Invalid && g_opcodeFuncs[type]!=nullptr);
+        const auto preA=reg.a, preB=reg.b;
+        (this->*g_opcodeFuncs[type])(Op & 255);
+        const auto postA=reg.a, postB=reg.b;
+        reg.a=preA; reg.b=preB;
+        // Force only these few constant-operand call sites into the handler.
+        // The generic move helpers retain their normal inlining policy.
+#if defined(__clang__)
+#define DSP_STATIC_INLINE [[clang::always_inline]]
+#else
+#define DSP_STATIC_INLINE
+#endif
+        if constexpr(Move==Movexr_ea) {
+            DSP_STATIC_INLINE op_Movexr_ea(Op);
+        } else if constexpr(Move==Movex_ea || Move==Movey_ea) {
+            constexpr auto w=getFieldValue(getFieldInfoCE<Move,Field_W>(),Op);
+            constexpr auto mmm=getFieldValue(getFieldInfoCE<Move,Field_MMM>(),Op);
+            constexpr auto area=Move==Movex_ea?MemArea_X:MemArea_Y;
+            DSP_STATIC_INLINE move_ddddd_MMMRRR<Move,area,w,mmm>(Op);
+        } else if constexpr(Move==Movexy) {
+            constexpr auto w=getFieldValue(getFieldInfoCE<Move,Field_W>(),Op);
+            constexpr auto y=getFieldValue(getFieldInfoCE<Move,Field_w>(),Op);
+            constexpr auto ee=getFieldValue(getFieldInfoCE<Move,Field_ee>(),Op);
+            constexpr auto ff=getFieldValue(getFieldInfoCE<Move,Field_ff>(),Op);
+            DSP_STATIC_INLINE opCE_Movexy<w,y,ee,ff>(Op);
+        }
+#undef DSP_STATIC_INLINE
+        if(postA!=preA) reg.a=postA;
+        if(postB!=preB) reg.b=postB;
+    }
+    InterpreterHandlers DSP::resolveStaticParallel(TWord op) {
+#if defined(DSP56K_STATIC_PARALLEL_OPCODES)
+        if constexpr(!g_traceSupported) {
+            switch(op) {
+#define DSP_STATIC_PARALLEL(Op, Move) \
+                case Op: return {&DSP::op_ParallelStatic<Op,Move>, &DSP::threadedOp<&DSP::op_ParallelStatic<Op,Move>>};
+#include "staticparallelops.inc"
+#undef DSP_STATIC_PARALLEL
+            }
+        }
+#endif
+        return {};
+    }
+
     InterpreterHandlers DSP::resolveParallelHandlers(TInstructionFunc move,TWord op,Instruction alu) {
         if(parallelAluType(op&255)==alu) {
 #define DSP_FUSED_MOVE(...) \

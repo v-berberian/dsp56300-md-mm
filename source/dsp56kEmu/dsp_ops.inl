@@ -642,7 +642,8 @@ namespace dsp56k
 				// call special function that simulates latch registers for alu op + parallel move
                 cacheEntry.opMove = resolvePermutation(oiMove->m_instruction, op);
                 cacheEntry.opAlu = resolvePermutation(oiAlu->m_instruction, op);
-                const auto handlers = resolveParallelHandlers(cacheEntry.opMove, op, oiAlu->m_instruction);
+                auto handlers = m_staticParallelOpcodes ? resolveStaticParallel(op) : InterpreterHandlers{};
+                if(!handlers.op) handlers = resolveParallelHandlers(cacheEntry.opMove, op, oiAlu->m_instruction);
                 cacheEntry.op = handlers.op;
                 cacheEntry.threaded = handlers.threaded;
                 exec_jump(cacheEntry.op, op);

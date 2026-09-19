@@ -7,6 +7,7 @@
 #include "jitblockemitter.h"
 
 #include "asmjit/core/jitruntime.h"
+#include "hostjitruntime.h"
 
 #define WAIT_FOR_PROFILER 0
 
@@ -115,7 +116,7 @@ namespace dsp56k
 		Jit::toJitPtr(_jit)->run(_pc);
 	}
 
-	Jit::Jit(DSP& _dsp) : m_dsp(_dsp), m_trampoline(_dsp), m_rt(g_useJIT ? new JitRuntime() : nullptr)
+	Jit::Jit(DSP& _dsp) : m_dsp(_dsp), m_trampoline(_dsp), m_rt(g_useJIT ? new HostJitRuntime() : nullptr)
 	{
 		// Interpreter hosts (including iPadOS) must never allocate executable code.
 		if constexpr(!g_useJIT) return;

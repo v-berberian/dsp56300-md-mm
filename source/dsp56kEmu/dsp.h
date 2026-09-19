@@ -187,6 +187,7 @@ namespace dsp56k
 		InterpreterCache<uint8_t>		m_opcodeCycleCache;
         InterpreterCache<std::shared_ptr<InterpreterPollingLoop>> m_pollingLoops;
         uint64_t m_programRevision=0, m_peripheralEpoch=0, m_skippedPollingInstructions=0;
+        bool m_staticParallelOpcodes = true;
         std::vector<uint64_t> m_programPageRevisions;
         void skipStablePollingLoop(TWord branchPC, uint64_t targetCycles);
 		
@@ -327,6 +328,11 @@ namespace dsp56k
 		}
 
         uint64_t getSkippedPollingInstructions() const { return m_skippedPollingInstructions; }
+        // Diagnostic A/B switch. Only cache resolution checks it; switching
+        // invalidates dispatch metadata without changing processor state.
+        void setStaticParallelOpcodes(bool enabled) {
+            if(m_staticParallelOpcodes != enabled) { m_staticParallelOpcodes=enabled; clearOpcodeCache(); }
+        }
         void execInterpreterThreaded(uint64_t targetCycles = 0) noexcept;
         template<TInstructionFunc Func> static void DSP56K_INTERPRETER_CC threadedOp(DSP*, uint64_t, TWord, uint32_t);
         static void DSP56K_INTERPRETER_CC threadedNopRun(DSP*, uint64_t, TWord, uint32_t);
@@ -1327,6 +1333,8 @@ namespace dsp56k
 		void op_Parallel(TWord op);
 		template<TWord Alu> void op_ParallelCached(TWord op);
         template<TInstructionFunc Move, TWord Alu> void op_ParallelFused(TWord op);
+        template<TWord Op, Instruction Move> void op_ParallelStatic(TWord op);
+        static InterpreterHandlers resolveStaticParallel(TWord op);
         static InterpreterHandlers resolveParallelHandlers(TInstructionFunc move,TWord op,Instruction alu);
 		static TInstructionFunc resolveParallelAlu(TWord op, Instruction alu);
 

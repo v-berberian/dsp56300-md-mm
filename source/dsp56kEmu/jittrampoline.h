@@ -6,6 +6,7 @@
 #include "jittypes.h"
 
 #include "asmjit/core/jitruntime.h"
+#include "hostjitruntime.h"
 
 namespace dsp56k
 {
@@ -52,7 +53,7 @@ namespace dsp56k
 		void generateExecOneFunc();
 
 		DSP& m_dsp;
-		asmjit::JitRuntime m_runtime;
+		HostJitRuntime m_runtime;
 		AsmJitLogger m_logger;
 		AsmJitErrorHandler m_errorHandler;
 		TExecLoopFunc m_funcExecLoop = nullptr;
