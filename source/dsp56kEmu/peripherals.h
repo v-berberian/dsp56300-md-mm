@@ -11,6 +11,8 @@
 #include "types.h"
 #include <array>
 #include <atomic>
+#include <functional>
+#include <utility>
 
 namespace dsp56k
 {
@@ -163,14 +165,17 @@ namespace dsp56k
 	public:
 		PeripheralsNop() : IPeripherals(PeripheralType::PeripheralsNop) {}
 		uint32_t exec() noexcept { return MaxDelayCycles; }
+		// Optional host-owned extension port. Unconfigured machines remain NOP.
+		void setWriteCallback(std::function<void(TWord,TWord)> callback) { m_write=std::move(callback); }
 
 	private:
 		TWord read(TWord _addr, Instruction _inst) override { return 0; }
 		const TWord* readAsPtr(TWord _addr, Instruction _inst) override { return nullptr; }
-		void write(TWord _addr, TWord _value) override {}
+		void write(TWord _addr, TWord _value) override { if(m_write) m_write(_addr,_value); }
 		void reset() override {}
 		void setSymbols(Disassembler& _disasm) const override {}
 		void terminate() override {}
+		std::function<void(TWord,TWord)> m_write;
 	};
 
 	class Peripherals56303 final : public IPeripherals
